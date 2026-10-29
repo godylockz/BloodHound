@@ -521,19 +521,32 @@ func postAddSecret(ctx context.Context, db graph.Database, sink *post.FilteredRe
 	})
 }
 
+// servicePrincipalTypeManagedIdentity is the Microsoft Graph servicePrincipalType value of a managed identity.
+const servicePrincipalTypeManagedIdentity = "ManagedIdentity"
+
 // managedIdentityServicePrincipalIDs returns the set of service principal node IDs that back
-// a managed identity — the end nodes of AZManagedIdentity edges. A managed identity is
-// ingested as a plain ServicePrincipal distinguished only by that inbound edge, so this is
-// the only way to recognise one. Its credentials are Azure-managed and cannot be added to,
-// which is why AZAddSecret must not target it.
+// a managed identity — the end nodes of AZManagedIdentity edges, plus service principals whose
+// serviceprincipaltype is ManagedIdentity. The property covers managed identities whose owning
+// resource was not collected and therefore has no AZManagedIdentity edge. Their credentials are
+// Azure-managed and cannot be added to, which is why AZAddSecret must not target them.
 func managedIdentityServicePrincipalIDs(tx graph.Transaction) (map[graph.ID]struct{}, error) {
 	if managedIdentitySPs, err := ops.FetchEndNodes(tx.Relationships().Filterf(func() graph.Criteria {
 		return query.Kind(query.Relationship(), azure.ManagedIdentity)
 	})); err != nil {
 		return nil, err
+	} else if typedManagedIdentitySPIDs, err := ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+		return query.And(
+			query.Kind(query.Node(), azure.ServicePrincipal),
+			query.Equals(query.NodeProperty(azure.ServicePrincipalType.String()), servicePrincipalTypeManagedIdentity),
+		)
+	})); err != nil {
+		return nil, err
 	} else {
-		ids := make(map[graph.ID]struct{}, len(managedIdentitySPs))
+		ids := make(map[graph.ID]struct{}, len(managedIdentitySPs)+len(typedManagedIdentitySPIDs))
 		for _, id := range managedIdentitySPs.IDs() {
+			ids[id] = struct{}{}
+		}
+		for _, id := range typedManagedIdentitySPIDs {
 			ids[id] = struct{}{}
 		}
 		return ids, nil

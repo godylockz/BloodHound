@@ -811,6 +811,7 @@ func TestEntityDetails(t *testing.T) {
 				// Regression for #943: the managed-identity service principal, whose credentials
 				// are Azure-managed, must never be the target of an AZAddSecret edge.
 				assert.NotEqual(t, harness.AZAddSecretHarness.AZManagedIdentitySP.ID, edge.EndID)
+				assert.NotEqual(t, harness.AZAddSecretHarness.AZTypedManagedIdentitySP.ID, edge.EndID)
 			}
 		})
 	})
