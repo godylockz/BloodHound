@@ -136,9 +136,13 @@ func TestRoleMembers(t *testing.T) {
 		ctrl       = gomock.NewController(t)
 		mockTx     = graph_mocks.NewMockTransaction(ctrl)
 		stubTenant = &graph.Node{
-			ID:         1,
-			Kinds:      graph.Kinds{azschema.Entity, azschema.Tenant},
-			Properties: &graph.Properties{},
+			ID:    1,
+			Kinds: graph.Kinds{azschema.Entity, azschema.Tenant},
+			Properties: &graph.Properties{
+				Map: map[string]any{
+					"objectid": "tenant-object-id",
+				},
+			},
 		}
 		stubIntuneAdminRole = &graph.Node{
 			ID:    2,
