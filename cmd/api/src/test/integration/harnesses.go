@@ -7228,11 +7228,14 @@ func (s *ESC13HarnessECA) Setup(graphTestContext *GraphTestContext) {
 }
 
 type AZAddSecretHarness struct {
-	AZApp              *graph.Node
-	AZServicePrincipal *graph.Node
-	AZTenant           *graph.Node
-	AppAdminRole       *graph.Node
-	CloudAppAdminRole  *graph.Node
+	AZApp                    *graph.Node
+	AZServicePrincipal       *graph.Node
+	AZManagedIdentitySP      *graph.Node
+	AZTypedManagedIdentitySP *graph.Node
+	AZVMWithManagedIdentity  *graph.Node
+	AZTenant                 *graph.Node
+	AppAdminRole             *graph.Node
+	CloudAppAdminRole        *graph.Node
 }
 
 func (s *AZAddSecretHarness) Setup(graphTestContext *GraphTestContext) {
@@ -7245,8 +7248,26 @@ func (s *AZAddSecretHarness) Setup(graphTestContext *GraphTestContext) {
 	s.AppAdminRole = graphTestContext.NewAzureRole("AppAdminRole", RandomObjectID(graphTestContext.testCtx), azure.ApplicationAdministratorRole, tenantID)
 	s.CloudAppAdminRole = graphTestContext.NewAzureRole("CloudAppAdminRole", RandomObjectID(graphTestContext.testCtx), azure.CloudApplicationAdministratorRole, tenantID)
 
+	// A managed identity is ingested as a plain service principal, distinguished only by an
+	// inbound AZManagedIdentity edge from the resource that owns it. Its credentials are
+	// Azure-managed, so an AddSecret-capable role must NOT receive an AZAddSecret edge to it
+	// (regression guard for #943). Without the fix this SP is treated like any other and the
+	// AddSecret count rises from 4 to 6.
+	s.AZVMWithManagedIdentity = graphTestContext.NewAzureVM("AZVMWithManagedIdentity", RandomObjectID(graphTestContext.testCtx), tenantID)
+	s.AZManagedIdentitySP = graphTestContext.NewAzureServicePrincipal("AZManagedIdentitySP", RandomObjectID(graphTestContext.testCtx), tenantID)
+
+	// A managed identity whose owning resource was not collected has no AZManagedIdentity edge and is
+	// recognised by its serviceprincipaltype instead.
+	s.AZTypedManagedIdentitySP = graphTestContext.NewAzureServicePrincipal("AZTypedManagedIdentitySP", RandomObjectID(graphTestContext.testCtx), tenantID)
+	s.AZTypedManagedIdentitySP.Properties.Set(azure.ServicePrincipalType.String(), "ManagedIdentity")
+	graphTestContext.UpdateNode(s.AZTypedManagedIdentitySP)
+
 	graphTestContext.NewRelationship(s.AZTenant, s.AZApp, azure.Contains)
 	graphTestContext.NewRelationship(s.AZTenant, s.AZServicePrincipal, azure.Contains)
+	graphTestContext.NewRelationship(s.AZTenant, s.AZManagedIdentitySP, azure.Contains)
+	graphTestContext.NewRelationship(s.AZTenant, s.AZTypedManagedIdentitySP, azure.Contains)
+	graphTestContext.NewRelationship(s.AZTenant, s.AZVMWithManagedIdentity, azure.Contains)
+	graphTestContext.NewRelationship(s.AZVMWithManagedIdentity, s.AZManagedIdentitySP, azure.ManagedIdentity)
 	graphTestContext.NewRelationship(s.AZTenant, s.AppAdminRole, azure.Contains)
 	graphTestContext.NewRelationship(s.AZTenant, s.CloudAppAdminRole, azure.Contains)
 }

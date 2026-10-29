@@ -227,8 +227,24 @@ func AppRoleAssignments(ctx context.Context, db graph.Database) (*post.AtomicPos
 		sink := post.NewFilteredRelationshipSink(ctx, "Azure App Role Assignments Post Processing", db, appRoleAssignmentTracker)
 		defer sink.Done()
 
+		// A managed identity's service principal is recognised by inbound
+		// AZManagedIdentity edges across the whole graph, independent of tenant, so
+		// resolve the set once here instead of re-running the same lookup for every
+		// tenant inside postAddSecret.
+		managedIdentityIDs := make(map[graph.ID]struct{})
+		if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
+			ids, err := managedIdentityServicePrincipalIDs(tx)
+			if err != nil {
+				return err
+			}
+			managedIdentityIDs = ids
+			return nil
+		}); err != nil {
+			return &post.AtomicPostProcessingStats{}, err
+		}
+
 		for _, tenant := range tenants {
-			if err := postAppRoleAssignmentsForTenant(ctx, db, sink, tenant); err != nil {
+			if err := postAppRoleAssignmentsForTenant(ctx, db, sink, tenant, managedIdentityIDs); err != nil {
 				return &post.AtomicPostProcessingStats{}, err
 			}
 		}
@@ -237,7 +253,7 @@ func AppRoleAssignments(ctx context.Context, db graph.Database) (*post.AtomicPos
 	}
 }
 
-func postAppRoleAssignmentsForTenant(ctx context.Context, db graph.Database, sink *post.FilteredRelationshipSink, tenant *graph.Node) error {
+func postAppRoleAssignmentsForTenant(ctx context.Context, db graph.Database, sink *post.FilteredRelationshipSink, tenant *graph.Node, managedIdentityIDs map[graph.ID]struct{}) error {
 	return db.ReadTransaction(ctx, func(tx graph.Transaction) error {
 		if tenantContainsServicePrincipalRelationships, err := fetchTenantContainsRelationships(tx, tenant, azure.ServicePrincipal); err != nil {
 			return err
@@ -255,7 +271,7 @@ func postAppRoleAssignmentsForTenant(ctx context.Context, db graph.Database, sin
 			return err
 		} else if err := postAZMGServicePrincipalEndpointReadWriteAllEdges(ctx, db, sink, tenantContainsServicePrincipalRelationships); err != nil {
 			return err
-		} else if err := postAddSecret(ctx, db, sink, tenant); err != nil {
+		} else if err := postAddSecret(ctx, db, sink, tenant, managedIdentityIDs); err != nil {
 			return err
 		}
 
@@ -467,7 +483,7 @@ func postAZMGServicePrincipalEndpointReadWriteAllEdges(ctx context.Context, db g
 	})
 }
 
-func postAddSecret(ctx context.Context, db graph.Database, sink *post.FilteredRelationshipSink, tenant *graph.Node) error {
+func postAddSecret(ctx context.Context, db graph.Database, sink *post.FilteredRelationshipSink, tenant *graph.Node, managedIdentityIDs map[graph.ID]struct{}) error {
 	return db.ReadTransaction(ctx, func(tx graph.Transaction) error {
 		if addSecretRoles, err := TenantRoles(tx, tenant, AddSecretRoleIDs()...); err != nil {
 			return err
@@ -476,6 +492,14 @@ func postAddSecret(ctx context.Context, db graph.Database, sink *post.FilteredRe
 		} else {
 			for _, role := range addSecretRoles {
 				for _, target := range tenantAppsAndSPs {
+					// A managed identity's service principal has its credentials issued and
+					// rotated by Azure; there is no addPassword/addKey path on it, so an
+					// AddSecret-capable role cannot mint one. Emitting AZAddSecret to it draws
+					// a privilege-escalation edge that cannot be walked, so skip it.
+					if _, isManagedIdentity := managedIdentityIDs[target.ID]; isManagedIdentity {
+						continue
+					}
+
 					slog.DebugContext(
 						ctx,
 						"Adding AZAddSecret edge from role to target",
@@ -495,6 +519,38 @@ func postAddSecret(ctx context.Context, db graph.Database, sink *post.FilteredRe
 
 		return nil
 	})
+}
+
+// servicePrincipalTypeManagedIdentity is the Microsoft Graph servicePrincipalType value of a managed identity.
+const servicePrincipalTypeManagedIdentity = "ManagedIdentity"
+
+// managedIdentityServicePrincipalIDs returns the set of service principal node IDs that back
+// a managed identity — the end nodes of AZManagedIdentity edges, plus service principals whose
+// serviceprincipaltype is ManagedIdentity. The property covers managed identities whose owning
+// resource was not collected and therefore has no AZManagedIdentity edge. Their credentials are
+// Azure-managed and cannot be added to, which is why AZAddSecret must not target them.
+func managedIdentityServicePrincipalIDs(tx graph.Transaction) (map[graph.ID]struct{}, error) {
+	if managedIdentitySPs, err := ops.FetchEndNodes(tx.Relationships().Filterf(func() graph.Criteria {
+		return query.Kind(query.Relationship(), azure.ManagedIdentity)
+	})); err != nil {
+		return nil, err
+	} else if typedManagedIdentitySPIDs, err := ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+		return query.And(
+			query.Kind(query.Node(), azure.ServicePrincipal),
+			query.Equals(query.NodeProperty(azure.ServicePrincipalType.String()), servicePrincipalTypeManagedIdentity),
+		)
+	})); err != nil {
+		return nil, err
+	} else {
+		ids := make(map[graph.ID]struct{}, len(managedIdentitySPs)+len(typedManagedIdentitySPIDs))
+		for _, id := range managedIdentitySPs.IDs() {
+			ids[id] = struct{}{}
+		}
+		for _, id := range typedManagedIdentitySPIDs {
+			ids[id] = struct{}{}
+		}
+		return ids, nil
+	}
 }
 
 var addOwnerPostProcessedEdges = graph.Kinds{
