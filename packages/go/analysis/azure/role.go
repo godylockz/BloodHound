@@ -21,10 +21,12 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/specterops/bloodhound/packages/go/bhlog/measure"
 	"github.com/specterops/bloodhound/packages/go/graphschema"
 	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
 	"github.com/specterops/dawgs/cardinality"
 	"github.com/specterops/dawgs/graph"
 	"github.com/specterops/dawgs/ops"
@@ -300,7 +302,7 @@ func FetchTenantRoleAssignments(ctx context.Context, db graph.Database, tenant *
 func RoleMembers(tx graph.Transaction, tenant *graph.Node, roleTemplateIDs ...string) (graph.NodeSet, error) {
 	if tenantRoles, err := TenantRoles(tx, tenant, roleTemplateIDs...); err != nil {
 		return nil, err
-	} else if members, err := roleMembers(tx, tenantRoles); err != nil {
+	} else if members, err := roleMembers(tx, tenant, tenantRoles); err != nil {
 		return nil, err
 	} else {
 		for _, role := range tenantRoles {
@@ -310,16 +312,25 @@ func RoleMembers(tx graph.Transaction, tenant *graph.Node, roleTemplateIDs ...st
 	}
 }
 
-func roleMembers(tx graph.Transaction, tenantRoles graph.NodeSet, additionalRelationships ...graph.Kind) (graph.NodeSet, error) {
+func roleMembers(tx graph.Transaction, tenant *graph.Node, tenantRoles graph.NodeSet, additionalRelationships ...graph.Kind) (graph.NodeSet, error) {
 	members := graph.NewNodeSet()
+
+	tenantObjectID, err := tenant.Properties.Get(common.ObjectID.String()).String()
+	if err != nil {
+		return nil, err
+	}
 
 	for _, tenantRole := range tenantRoles {
 		if paths, err := ops.TraversePaths(tx, ops.TraversalPlan{
 			Root:      tenantRole,
 			Direction: graph.DirectionInbound,
 			BranchQuery: func() graph.Criteria {
-				return query.And(
-					query.KindIn(query.Relationship(), append(additionalRelationships, azure.MemberOf, azure.HasRole)...),
+				return query.Or(
+					query.KindIn(query.Relationship(), append(additionalRelationships, azure.MemberOf)...),
+					query.And(
+						query.Kind(query.Relationship(), azure.HasRole),
+						tenantWideRoleAssignment(tenantObjectID),
+					),
 				)
 			},
 			DescentFilter: roleDescentFilter,
@@ -337,6 +348,16 @@ func roleMembers(tx graph.Transaction, tenantRoles graph.NodeSet, additionalRela
 	return members, nil
 }
 
+// tenantWideRoleAssignment matches AZHasRole edges whose assignment covers the whole tenant. An assignment scoped
+// to an administrative unit or a single object carries that scope and does not grant the role over the tenant.
+// Edges without a scope predate the property and are treated as tenant-wide.
+func tenantWideRoleAssignment(tenantObjectID string) graph.Criteria {
+	return query.Or(
+		query.Not(query.Exists(query.RelationshipProperty(azure.Scope.String()))),
+		query.Equals(query.RelationshipProperty(azure.Scope.String()), strings.ToUpper(tenantObjectID)),
+	)
+}
+
 // RoleMembersWithGrants returns the NodeSet of members for a given set of roles, including those members who may be able to grant themselves one of the given roles
 // NOTE: The current implementation also includes the role nodes in the returned set. It may be worth considering removing those nodes from the set if doing so doesn't break tier zero/high value assignment
 func RoleMembersWithGrants(tx graph.Transaction, tenant *graph.Node, roleTemplateIDs ...string) (graph.NodeSet, error) {
@@ -345,6 +366,6 @@ func RoleMembersWithGrants(tx graph.Transaction, tenant *graph.Node, roleTemplat
 	if tenantRoles, err := TenantRoles(tx, tenant, roleTemplateIDs...); err != nil {
 		return nil, err
 	} else {
-		return roleMembers(tx, tenantRoles, azure.GrantSelf)
+		return roleMembers(tx, tenant, tenantRoles, azure.GrantSelf)
 	}
 }
