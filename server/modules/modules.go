@@ -27,10 +27,12 @@ import (
 	alerts "github.com/specterops/bloodhound/server/alerts"
 	"github.com/specterops/bloodhound/server/analysis"
 	"github.com/specterops/bloodhound/server/appcfg"
-	"github.com/specterops/bloodhound/server/extensions"
+	"github.com/specterops/bloodhound/server/auth"
+	"github.com/specterops/bloodhound/server/dataquality"
 	"github.com/specterops/bloodhound/server/featureflags"
 	"github.com/specterops/bloodhound/server/graphdb"
 	"github.com/specterops/bloodhound/server/identity"
+	"github.com/specterops/bloodhound/server/opengraphschema"
 	"github.com/specterops/dawgs/graph"
 )
 
@@ -83,8 +85,10 @@ func Register(deps Deps) {
 
 	analysis.Register(deps.Router, deps.Pool)
 	appcfg.Register(deps.Router, deps.Pool, deps.ConfigUpdateSideEffects)
+	auth.Register(deps.Router, deps.Pool)
 	identity.Register(deps.Router, deps.Pool)
 	featureflags.Register(deps.Router, deps.Pool)
 	graphdb.Register(deps.Router, deps.Pool, deps.Graph, deps.DogTags)
-	extensions.Register(deps.Router, deps.Pool)
+	opengraphschema.Register(deps.Router, deps.Pool)
+	dataquality.Register(deps.Router, deps.Pool)
 }
