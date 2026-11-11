@@ -24,7 +24,8 @@ import (
 
 	"github.com/specterops/bloodhound/cmd/api/src/test/integration"
 	"github.com/specterops/bloodhound/packages/go/analysis/azure"
-	graphAzure "github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	graphazure "github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
 	"github.com/specterops/dawgs/graph"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestRoleMembersHonourAssignmentScope(t *testing.T) {
 	var (
 		tenantID      = strings.ToUpper(integration.RandomObjectID(t))
 		tenant        = NewAzureTenant(t, &suite, tenantID)
-		role          = NewAzureRole(t, &suite, "HelpdeskAdminRole", integration.RandomObjectID(t), graphAzure.HelpdeskAdministratorRole, tenantID)
+		role          = NewAzureRole(t, &suite, "HelpdeskAdminRole", integration.RandomObjectID(t), graphazure.HelpdeskAdministratorRole, tenantID)
 		tenantScoped  = NewAzureServicePrincipal(t, &suite, "TenantScoped", integration.RandomObjectID(t), tenantID)
 		unscoped      = NewAzureServicePrincipal(t, &suite, "Unscoped", integration.RandomObjectID(t), tenantID)
 		adminUnitOnly = NewAzureServicePrincipal(t, &suite, "AdminUnitScoped", integration.RandomObjectID(t), tenantID)
@@ -45,21 +46,110 @@ func TestRoleMembersHonourAssignmentScope(t *testing.T) {
 	)
 
 	scope := func(value string) *graph.Properties {
-		return graph.AsProperties(graph.PropertyMap{graphAzure.Scope: value})
+		return graph.AsProperties(graph.PropertyMap{graphazure.Scope: value})
 	}
 
-	NewRelationship(t, &suite, tenant, role, graphAzure.Contains)
-	NewRelationship(t, &suite, tenantScoped, role, graphAzure.HasRole, scope(tenantID))
-	NewRelationship(t, &suite, unscoped, role, graphAzure.HasRole)
-	NewRelationship(t, &suite, adminUnitOnly, role, graphAzure.HasRole, scope("ADMINISTRATIVEUNITS/"+strings.ToUpper(integration.RandomObjectID(t))))
-	NewRelationship(t, &suite, appOnly, role, graphAzure.HasRole, scope(strings.ToUpper(integration.RandomObjectID(t))))
+	NewRelationship(t, &suite, tenant, role, graphazure.Contains)
+	NewRelationship(t, &suite, tenantScoped, role, graphazure.HasRole, scope(tenantID))
+	NewRelationship(t, &suite, unscoped, role, graphazure.HasRole)
+	NewRelationship(t, &suite, adminUnitOnly, role, graphazure.HasRole, scope("ADMINISTRATIVEUNITS/"+strings.ToUpper(integration.RandomObjectID(t))))
+	NewRelationship(t, &suite, appOnly, role, graphazure.HasRole, scope(strings.ToUpper(integration.RandomObjectID(t))))
 
 	err := suite.GraphDB.ReadTransaction(suite.Context, func(tx graph.Transaction) error {
-		members, err := azure.RoleMembers(tx, tenant, graphAzure.HelpdeskAdministratorRole)
+		members, err := azure.RoleMembers(tx, tenant, graphazure.HelpdeskAdministratorRole)
 		require.NoError(t, err)
 
 		assert.ElementsMatch(t, []graph.ID{tenantScoped.ID, unscoped.ID}, members.IDs())
 		return nil
 	})
 	require.NoError(t, err)
+}
+
+func TestRoleTraversalRoleAssignableGroupPropertyTypes(t *testing.T) {
+	var (
+		suite    = setupIntegrationTestSuite(t)
+		tenantID = randomObjectID(t)
+		tenant   = NewAzureTenant(t, &suite, tenantID)
+		role     = NewAzureRole(t, &suite, "Global Administrator", randomObjectID(t), graphazure.CompanyAdministratorRole, tenantID)
+		cases    = []struct {
+			name               string
+			isAssignableToRole any
+			nestedGroup        bool
+			wantInheritedRole  bool
+		}{
+			{name: "boolean true", isAssignableToRole: true, wantInheritedRole: true},
+			{name: "string true", isAssignableToRole: "true", wantInheritedRole: true},
+			{name: "boolean false", isAssignableToRole: false},
+			{name: "string false", isAssignableToRole: "false"},
+			{name: "missing property"},
+			{name: "invalid string", isAssignableToRole: "not-a-boolean"},
+			{name: "numeric value", isAssignableToRole: 1},
+			{name: "nested boolean true groups", isAssignableToRole: true, nestedGroup: true},
+			{name: "nested string true groups", isAssignableToRole: "true", nestedGroup: true},
+		}
+	)
+	defer teardownIntegrationTestSuite(t, &suite)
+
+	NewRelationship(t, &suite, tenant, role, graphazure.Contains)
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var (
+				groupProperties = graph.PropertyMap{
+					common.Name:         testCase.name,
+					common.ObjectID:     randomObjectID(t),
+					graphazure.TenantID: tenantID,
+				}
+				user = NewNode(t, &suite, graph.AsProperties(graph.PropertyMap{
+					common.Name:         "Group member",
+					common.ObjectID:     randomObjectID(t),
+					graphazure.TenantID: tenantID,
+				}), graphazure.Entity, graphazure.User)
+			)
+			if testCase.isAssignableToRole != nil {
+				groupProperties[graphazure.IsAssignableToRole] = testCase.isAssignableToRole
+			}
+
+			var group = NewNode(t, &suite, graph.AsProperties(groupProperties), graphazure.Entity, graphazure.Group)
+			NewRelationship(t, &suite, tenant, group, graphazure.Contains)
+			NewRelationship(t, &suite, tenant, user, graphazure.Contains)
+
+			// The same group has active and eligible assignments. Each lookup below
+			// traverses only its own assignment kind, exercising both directions.
+			NewRelationship(t, &suite, group, role, graphazure.HasRole)
+			NewRelationship(t, &suite, group, role, graphazure.AZRoleEligible)
+			if testCase.nestedGroup {
+				var nestedGroup = NewNode(t, &suite, graph.AsProperties(graph.PropertyMap{
+					common.Name:                   "Nested group",
+					common.ObjectID:               randomObjectID(t),
+					graphazure.TenantID:           tenantID,
+					graphazure.IsAssignableToRole: testCase.isAssignableToRole,
+				}), graphazure.Entity, graphazure.Group)
+				NewRelationship(t, &suite, tenant, nestedGroup, graphazure.Contains)
+				NewRelationship(t, &suite, user, nestedGroup, graphazure.MemberOf)
+				NewRelationship(t, &suite, nestedGroup, group, graphazure.MemberOf)
+			} else {
+				NewRelationship(t, &suite, user, group, graphazure.MemberOf)
+			}
+
+			err := suite.GraphDB.ReadTransaction(suite.Context, func(tx graph.Transaction) error {
+				// RoleMembers walks inbound from the role toward its active assignees.
+				members, err := azure.RoleMembers(tx, tenant, graphazure.CompanyAdministratorRole)
+				if err != nil {
+					return err
+				}
+				assert.Equal(t, testCase.wantInheritedRole, members.Contains(user), "active role inherited through group")
+
+				// Eligible-role lookup walks outbound from the user. String-valued
+				// true must work here too so role membership displays remain correct.
+				eligibleRoles, err := azure.FetchEntityEligibleRoles(tx, user, 0, 0)
+				if err != nil {
+					return err
+				}
+				assert.Equal(t, testCase.wantInheritedRole, eligibleRoles.Contains(role), "eligible role inherited through group")
+				return nil
+			})
+			require.NoError(t, err)
+		})
+	}
 }

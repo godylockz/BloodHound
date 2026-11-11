@@ -348,6 +348,33 @@ func roleMembers(tx graph.Transaction, tenant *graph.Node, tenantRoles graph.Nod
 	return members, nil
 }
 
+func roleMembersByRelationshipKinds(tx graph.Transaction, tenantRoles graph.NodeSet, relationships ...graph.Kind) (graph.NodeSet, error) {
+	members := graph.NewNodeSet()
+
+	for _, tenantRole := range tenantRoles {
+		if paths, err := ops.TraversePaths(tx, ops.TraversalPlan{
+			Root:      tenantRole,
+			Direction: graph.DirectionInbound,
+			BranchQuery: func() graph.Criteria {
+				return query.And(
+					query.KindIn(query.Relationship(), relationships...),
+				)
+			},
+			DescentFilter: roleDescentFilter,
+			PathFilter: func(ctx *ops.TraversalContext, segment *graph.PathSegment) bool {
+				return segment.Node.Kinds.ContainsOneOf(azure.User, azure.Group, azure.ServicePrincipal)
+			},
+		}); err != nil {
+			return nil, err
+		} else {
+			// TODO: This could be more optimal by iterating in place instead of aggregating all results
+			members.AddSet(paths.AllNodes())
+		}
+	}
+
+	return members, nil
+}
+
 // tenantWideRoleAssignment matches AZHasRole edges whose assignment covers the whole tenant. An assignment scoped
 // to an administrative unit or a single object carries that scope and does not grant the role over the tenant.
 // Edges without a scope predate the property and are treated as tenant-wide.
