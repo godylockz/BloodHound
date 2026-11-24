@@ -1,4 +1,4 @@
-// Copyright 2023 Specter Ops, Inc.
+// Copyright 2026 Specter Ops, Inc.
 //
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
@@ -13,17 +13,5 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-
-import Abuse from './Abuse';
-import General from './General';
-import Opsec from './Opsec';
-import References from './References';
-
-const SQLAdmin = {
-    general: General,
-    abuse: Abuse,
-    opsec: Opsec,
-    references: References,
-};
-
-export default SQLAdmin;
+export const invalidControlClasses =
+    'enabled:aria-[invalid=true]:border-status-error-main enabled:aria-[invalid=true]:hover:border-status-error-main enabled:aria-[invalid=true]:focus:border-status-error-main aria-[invalid=true]:enabled:hover:focus:border-status-error-main disabled:aria-[invalid=true]:border-[color:var(--input-disabled-invalid-border)]';
