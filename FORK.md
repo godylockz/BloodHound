@@ -12,6 +12,9 @@ SpecterOps/BloodHound with pushes disabled.
 The scoped role assignment patch needs the role assignment scope patch in the AzureHound fork, which stops AzureHound
 from reporting administrative unit scopes as `/`.
 
+Docker builds use pinned collector versions by default. Override `SHARPHOUND_VERSION` or `AZUREHOUND_VERSION`
+with a Docker build argument or in the Compose environment.
+
 Not carried: https://github.com/SpecterOps/BloodHound/pull/3316 changes the default metrics port binding, but the shipped
 Docker configs set `metrics_port` explicitly. Set `"metrics_port": "127.0.0.1:2112"` in the deployment config instead.
 
